@@ -4,159 +4,149 @@
 # Author: Yue Zhao <zhaoy@cmu.edu>
 # License: BSD 2 clause
 
-from __future__ import division
-from __future__ import print_function
-
-import os
-import sys
 from time import time
 
-# temporary solution for relative imports in case pyod is not installed
-# if pyod is installed, no need to use the following line
-sys.path.append(
-    os.path.abspath(os.path.join(os.path.dirname("__file__"), '..')))
 # supress warnings for clean output
 import warnings
-
 warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from scipy.io import loadmat
+from pandas import read_excel
+#from sklearn.model_selection import train_test_split
 
-from pyod.models.abod import ABOD
-from pyod.models.cblof import CBLOF
-from pyod.models.feature_bagging import FeatureBagging
-from pyod.models.hbos import HBOS
-from pyod.models.iforest import IForest
-from pyod.models.knn import KNN
 from pyod.models.lof import LOF
-from pyod.models.mcd import MCD
-from pyod.models.ocsvm import OCSVM
-from pyod.models.pca import PCA
 from pyod.models.cof import COF
+from pyod.models.knn import KNN
 from pyod.models.sod import SOD
 
-from pyod.utils.utility import standardizer
+#from pyod.utils.utility import standardizer
 from pyod.utils.utility import precision_n_scores
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, average_precision_score
 
-# TODO: add neural networks, LOCI, SOS, COF, SOD
+def normalizeData(data_og):
+    data_max = np.max(data_og, axis=0)
+    data_max_v = np.max(data_og)
+    data_min = np.min(data_og, axis=0)
+    data_min_v = np.min(data_og)
+    data_mean = np.mean(data_og, axis=0)
+    data_mean_v = np.mean(data_og)
+    data_range = data_max - data_min
+    data_range_v = data_max_v - data_min_v
+    data = (data_og - data_mean) / data_range
+    return data, data_mean, data_range, data_mean_v, data_range_v
 
+
+BASE_DIR = '../../'
 # Define data file and read X and y
-mat_file_list = ['arrhythmia.mat',
-                 'cardio.mat',
-                 'glass.mat',
-                 'ionosphere.mat',
-                 'letter.mat',
-                 'lympho.mat',
-                 'mnist.mat',
-                 'musk.mat',
-                 'optdigits.mat',
-                 'pendigits.mat',
-                 'pima.mat',
-                 'satellite.mat',
-                 'satimage-2.mat',
-                 'shuttle.mat',
-                 'vertebral.mat',
-                 'vowels.mat',
-                 'wbc.mat']
+datasets = ['MED-WTG1-DATA.xlsx',
+            'MED-WTG2-DATA.xlsx',
+            'MED-WTG3-DATA.xlsx',
+            'MED-WTG4-DATA.xlsx',
+            'MED-WTG5-DATA.xlsx',
+            'MED-WTG6-DATA.xlsx',
+            'MED-WTG7-DATA.xlsx',
+            'MED-WTG8-DATA.xlsx',
+            ]
+
+df_columns = ['Data', '#Samples', '#Dimensions', 'Outlier Perc',
+              'LOF', 'COF', 'CBLOF','HBOS', 'KNN', 'AvgKNN',
+              'MedKNN', 'SOD']
 
 # define the number of iterations
 n_ite = 10
-n_classifiers = 10
-
-df_columns = ['Data', '#Samples', '# Dimensions', 'Outlier Perc',
-              'ABOD', 'CBLOF', 'FB', 'HBOS', 'IForest', 'KNN', 'LOF',
-              'MCD', 'OCSVM', 'PCA']
+n_classifiers = len(df_columns)-4
 
 # initialize the container for saving the results
 roc_df = pd.DataFrame(columns=df_columns)
 prn_df = pd.DataFrame(columns=df_columns)
 time_df = pd.DataFrame(columns=df_columns)
 
-for j in range(len(mat_file_list)):
+for j in range(len(datasets)):
 
-    mat_file = mat_file_list[j]
-    mat = loadmat(os.path.join('data', mat_file))
+    data_file = BASE_DIR + datasets[j]
+    data_name = data_file[len(BASE_DIR):-5]
+    data = read_excel(data_file).to_numpy()[:,[2,3,5,7,10,11]]
+    data = np.array(data, dtype=np.float32)
 
-    X = mat['X']
-    y = mat['y'].ravel()
+    X = data[:,:-1]
+    y = data[:,-1]
     outliers_fraction = np.count_nonzero(y) / len(y)
+    if outliers_fraction > 0.5:
+        outliers_fraction = 0.5
     outliers_percentage = round(outliers_fraction * 100, ndigits=4)
 
     # construct containers for saving results
-    roc_list = [mat_file[:-4], X.shape[0], X.shape[1], outliers_percentage]
-    prn_list = [mat_file[:-4], X.shape[0], X.shape[1], outliers_percentage]
-    time_list = [mat_file[:-4], X.shape[0], X.shape[1], outliers_percentage]
+    roc_list = [data_name, X.shape[0], X.shape[1], outliers_percentage]
+    ap_list = [data_name, X.shape[0], X.shape[1], outliers_percentage]
+    prn_list = [data_name, X.shape[0], X.shape[1], outliers_percentage]
+    time_list = [data_name, X.shape[0], X.shape[1], outliers_percentage]
 
     roc_mat = np.zeros([n_ite, n_classifiers])
+    ap_mat = np.zeros([n_ite, n_classifiers])
     prn_mat = np.zeros([n_ite, n_classifiers])
     time_mat = np.zeros([n_ite, n_classifiers])
 
     for i in range(n_ite):
-        print("\n... Processing", mat_file, '...', 'Iteration', i + 1)
-        random_state = np.random.RandomState(i)
+        print("\n... Processing", data_name, '...', 'Iteration', i + 1)
+        #random_state = np.random.RandomState(i)
 
         # 60% data for training and 40% for testing
-        X_train, X_test, y_train, y_test = \
-            train_test_split(X, y, test_size=0.4, random_state=random_state)
+        #X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.4, random_state=random_state)
 
         # standardizing data for processing
-        X_train_norm, X_test_norm = standardizer(X_train, X_test)
+        #X_train_norm, X_test_norm = standardizer(X_train, X_test)
+        X_norm = normalizeData(X)
 
-        classifiers = {'Angle-based Outlier Detector (ABOD)': ABOD(
-            contamination=outliers_fraction),
-            'Cluster-based Local Outlier Factor': CBLOF(
-                n_clusters=10,
-                contamination=outliers_fraction,
-                check_estimator=False,
-                random_state=random_state),
-            'Feature Bagging': FeatureBagging(contamination=outliers_fraction,
-                                              random_state=random_state),
-            'Histogram-base Outlier Detection (HBOS)': HBOS(
-                contamination=outliers_fraction),
-            'Isolation Forest': IForest(contamination=outliers_fraction,
-                                        random_state=random_state),
-            'K Nearest Neighbors (KNN)': KNN(contamination=outliers_fraction),
+        classifiers = {
             'Local Outlier Factor (LOF)': LOF(
-                contamination=outliers_fraction),
-            'Minimum Covariance Determinant (MCD)': MCD(
-                contamination=outliers_fraction, random_state=random_state),
-            'One-class SVM (OCSVM)': OCSVM(contamination=outliers_fraction),
-            'Principal Component Analysis (PCA)': PCA(
-                contamination=outliers_fraction, random_state=random_state),
+                contamination=outliers_fraction
+            ),
+            'Connectivity-Based Outlier Factor (COF)': COF(
+                contamination=outliers_fraction
+            ),
+            'K Nearest Neighbors (KNN)': KNN(
+                contamination=outliers_fraction
+            ),
+            'Average K Nearest Neighbors (AvgKNN)': KNN(
+                method='mean',
+                contamination=outliers_fraction
+            ),
+            'Median K Nearest Neighbors (MedKNN)': KNN(
+                method='median',
+                contamination=outliers_fraction
+            ),
+            'Subspace Outlier Detection (SOD)': SOD(
+                contamination=outliers_fraction
+            ) 
         }
         classifiers_indices = {
-            'Angle-based Outlier Detector (ABOD)': 0,
-            'Cluster-based Local Outlier Factor': 1,
-            'Feature Bagging': 2,
-            'Histogram-base Outlier Detection (HBOS)': 3,
-            'Isolation Forest': 4,
-            'K Nearest Neighbors (KNN)': 5,
-            'Local Outlier Factor (LOF)': 6,
-            'Minimum Covariance Determinant (MCD)': 7,
-            'One-class SVM (OCSVM)': 8,
-            'Principal Component Analysis (PCA)': 9,
+            'Local Outlier Factor (LOF)': 0,
+            'Connectivity-Based Outlier Factor (COF)': 1,
+            'K Nearest Neighbors (KNN)': 2,
+            'Average K Nearest Neighbors (AvgKNN)': 3,
+            'Median K Nearest Neighbors (MedKNN)': 4,
+            'Subspace Outlier Detection (SOD)': 5
         }
 
         for clf_name, clf in classifiers.items():
             t0 = time()
-            clf.fit(X_train_norm)
-            test_scores = clf.decision_function(X_test_norm)
+            clf.fit(X_norm)
+            scores = clf.decision_function(X_norm)
             t1 = time()
             duration = round(t1 - t0, ndigits=4)
 
-            roc = round(roc_auc_score(y_test, test_scores), ndigits=4)
-            prn = round(precision_n_scores(y_test, test_scores), ndigits=4)
+            roc = round(roc_auc_score(y, scores), ndigits=4)
+            ap = round(average_precision_score(y, scores), ndigits=4)
+            prn = round(precision_n_scores(y, scores), ndigits=4)
 
-            print('{clf_name} ROC:{roc}, precision @ rank n:{prn}, '
+            print('{clf_name} ROC:{roc}, AP:{ap}, precision @ rank n:{prn}, '
                   'execution time: {duration}s'.format(
-                clf_name=clf_name, roc=roc, prn=prn, duration=duration))
+                clf_name=clf_name, roc=roc, ap=ap, prn=prn, duration=duration))
 
             time_mat[i, classifiers_indices[clf_name]] = duration
             roc_mat[i, classifiers_indices[clf_name]] = roc
+            ap_mat[i, classifiers_indices[clf_name]] = ap
             prn_mat[i, classifiers_indices[clf_name]] = prn
 
     time_list = time_list + np.mean(time_mat, axis=0).tolist()
@@ -169,6 +159,11 @@ for j in range(len(mat_file_list)):
     temp_df.columns = df_columns
     roc_df = pd.concat([roc_df, temp_df], axis=0)
 
+    ap_list = ap_list + np.mean(ap_mat, axis=0).tolist()
+    temp_df = pd.DataFrame(ap_list).transpose()
+    temp_df.columns = df_columns
+    ap_df = pd.concat([ap_df, temp_df], axis=0)
+
     prn_list = prn_list + np.mean(prn_mat, axis=0).tolist()
     temp_df = pd.DataFrame(prn_list).transpose()
     temp_df.columns = df_columns
@@ -177,4 +172,12 @@ for j in range(len(mat_file_list)):
     # Save the results for each run
     time_df.to_csv('time.csv', index=False, float_format='%.3f')
     roc_df.to_csv('roc.csv', index=False, float_format='%.3f')
+    ap_df.to_csv('ap.csv', index=False, float_format='%.3f')
     prn_df.to_csv('prc.csv', index=False, float_format='%.3f')
+
+writer = pd.ExcelWriter('results_all.xlsx', engine='xlsxwriter')
+time_df.to_excel(writer, sheet_name='Execution time', index=False)
+roc_df.to_excel(writer, sheet_name='ROC AUC', index=False)
+ap_df.to_excel(writer, sheet_name='AP', index=False)
+prn_df.to_excel(writer, sheet_name='P@n', index=False)
+writer.save()
