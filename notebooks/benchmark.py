@@ -97,6 +97,8 @@ for j in range(len(datasets)):
         # standardizing data for processing
         #X_train_norm, X_test_norm = standardizer(X_train, X_test)
         X_norm = normalizeData(X)
+        print(np.shape(X))
+        print(np.shape(X_norm))
 
         classifiers = {
             'Local Outlier Factor (LOF)': LOF(
